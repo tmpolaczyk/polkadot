@@ -14,14 +14,25 @@
 // You should have received a copy of the GNU General Public License
 // along with Polkadot.  If not, see <http://www.gnu.org/licenses/>.
 
-use super::{test_harness, TestConfig};
+use super::*;
 
 use polkadot_node_network_protocol::{self as net_protocol, vstaging as protocol_vstaging, PeerId};
+use polkadot_node_primitives::{SignedFullStatement, Statement};
 use polkadot_node_subsystem::{
 	messages::{NetworkBridgeEvent, StatementDistributionMessage},
 	overseer,
 };
-use polkadot_primitives::vstaging::{CandidateHash, Hash, UncheckedSignedStatement};
+use polkadot_primitives::vstaging::{
+	CompactStatement, Hash, HeadData, SignedStatement, SigningContext, UncheckedSignedStatement,
+	ValidatorId, ValidatorIndex,
+};
+use polkadot_primitives_test_helpers::make_candidate;
+use sc_keystore::LocalKeystore;
+use sp_application_crypto::{sr25519::Pair, AppKey, Pair as TraitPair};
+use sp_keyring::Sr25519Keyring;
+use sp_keystore::{CryptoStore, SyncCryptoStorePtr};
+
+use std::sync::Arc;
 
 // TODO [now]: peer reported for providing statements meant to be masked out
 
@@ -37,35 +48,78 @@ fn peer_reported_for_providing_duplicate_statements() {
 		// from e.g. time and prints it out (would only appear on test failure).
 		rng_seed: 0,
 	};
+	let session_index = 1;
 
-	test_harness(config, |state, mut virtual_overseer| async {
-		let relay_parent = Hash::repeat_byte(0x01);
-		let candidate_hash = CandidateHash(Hash::repeat_byte(0x11));
+	test_harness(config, session_index, |test_state, mut virtual_overseer| async move {
+		let relay_hash = Hash::repeat_byte(0x01);
+		let (candidate, pvd) = make_candidate(
+			relay_hash,
+			1,
+			1.into(),
+			HeadData(vec![1, 2, 3]),
+			HeadData(vec![1]),
+			Hash::repeat_byte(42).into(),
+		);
+		let candidate_hash = candidate.hash();
+		let leaf = TestLeaf {
+			number: 1,
+			hash: relay_hash,
+			para_data: vec![(1.into(), PerParaData::new(97, HeadData(vec![1, 2, 3])))],
+		};
 
-		virtual_overseer
-			.send(overseer::FromOrchestra::Communication {
-				msg: StatementDistributionMessage::Backed(candidate_hash),
-			})
-			.await;
+		activate_leaf(&mut virtual_overseer, 1.into(), &leaf, &test_state).await;
 
-		let statement = UncheckedSignedStatement::new();
+		// virtual_overseer
+		// 	.send(overseer::FromOrchestra::Communication {
+		// 		msg: StatementDistributionMessage::Backed(candidate_hash),
+		// 	})
+		// 	.await;
 
-		virtual_overseer
-			.send(overseer::FromOrchestra::Communication {
-				msg: StatementDistributionMessage::NetworkBridgeUpdate(
-					NetworkBridgeEvent::PeerMessage(
-						// TODO: How to get peer id?
-						PeerId(state.local.unwrap().validator_id),
-						net_protocol::StatementDistributionMessage::VStaging(
-							protocol_vstaging::StatementDistributionMessage::Statement(
-								relay_parent,
-								statement,
-							),
-						),
-					),
-				),
-			})
-			.await;
+		let peer_id = PeerId::random();
+		let statement = {
+			let signing_context = SigningContext { parent_hash: relay_hash, session_index };
+
+			let keystore: SyncCryptoStorePtr = Arc::new(LocalKeystore::in_memory());
+			let alice_public = CryptoStore::sr25519_generate_new(
+				&*keystore,
+				ValidatorId::ID,
+				Some(&Sr25519Keyring::Alice.to_seed()),
+			)
+			.await
+			.unwrap();
+
+			SignedStatement::sign(
+				&keystore,
+				CompactStatement::Seconded(candidate_hash),
+				&signing_context,
+				ValidatorIndex(0),
+				&alice_public.into(),
+			)
+			.await
+			.ok()
+			.flatten()
+			.expect("should be signed")
+		};
+
+		// println!("{:?}", virtual_overseer.recv().await);
+
+		// virtual_overseer
+		// 	.send(overseer::FromOrchestra::Communication {
+		// 		msg: StatementDistributionMessage::NetworkBridgeUpdate(
+		// 			NetworkBridgeEvent::PeerMessage(
+		// 				peer_id,
+		// 				net_protocol::StatementDistributionMessage::VStaging(
+		// 					protocol_vstaging::StatementDistributionMessage::Statement(
+		// 						relay_hash,
+		// 						statement.into_unchecked(),
+		// 					),
+		// 				),
+		// 			),
+		// 		),
+		// 	})
+		// 	.await;
+
+		// println!("{:?}", virtual_overseer.recv().await);
 
 		virtual_overseer
 	});
