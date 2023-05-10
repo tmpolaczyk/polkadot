@@ -135,7 +135,8 @@ impl CollationGenerationSubsystem {
 				msg: CollationGenerationMessage::Initialize(config),
 			}) => {
 				if self.config.is_some() {
-					gum::error!(target: LOG_TARGET, "double initialization");
+					gum::warn!(target: LOG_TARGET, "double initialization");
+					self.config = Some(Arc::new(config));
 				} else {
 					self.config = Some(Arc::new(config));
 				}
